@@ -9,6 +9,7 @@
 #import "jiaAppDelegate.h"
 #import "GeTuiSdk.h"
 #import "XAspect.h"
+#import "jiaGTConfigManager.h"
 
 #define AtAspect GeTuiAppDelegate
 
@@ -19,12 +20,21 @@
 @synthesizeNucleusPatch(Default, -, void, application:(UIApplication *)application didRegisterForRemoteNotificationsWithDeviceToken:(NSData *)deviceToken);
 @synthesizeNucleusPatch(Default, -, void, application:(UIApplication *)application didFailToRegisterForRemoteNotificationsWithError:(NSError *)error);
 @synthesizeNucleusPatch(Default, -, void, application:(UIApplication *)application didRegisterUserNotificationSettings:(UIUserNotificationSettings *)notificationSettings);
+@synthesizeNucleusPatch(Default, -, void, application:(UIApplication *)application didReceiveRemoteNotification:(NSDictionary *)userInfo);
+@synthesizeNucleusPatch(Default, -, void, application:(UIApplication *)application didReceiveRemoteNotification:(NSDictionary *)userInfo fetchCompletionHandler:(void (^)(UIBackgroundFetchResult result))completionHandler);
+@synthesizeNucleusPatch(Default,-,void, dealloc);
 
 
 AspectPatch(-, BOOL, application:(UIApplication *)application didFinishLaunchingWithOptions:(NSDictionary *)launchOptions)
 {
     //个推初始化
     [self initLoadGeTui:launchOptions];
+    
+    //注册个推通知事件
+    [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(tongzhi:) name:@"jiaGeTuiNotification" object:nil];
+    
+    [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(jiareceive:) name:@"jiaReceiveRemoteNotification" object:nil];
+    [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(jiareceiveother:) name:@"jiaReceiveRemoteOtherNotification" object:nil];
     
     return XAMessageForward(application:application didFinishLaunchingWithOptions:launchOptions);
 }
@@ -65,6 +75,62 @@ AspectPatch(-, void, application:(UIApplication *)application didRegisterUserNot
 }
 
 
+AspectPatch(-, void,application:(UIApplication *)application didReceiveRemoteNotification:(NSDictionary *)userInfo)
+{
+    //处理applicationIconBadgeNumber-1
+    // [self handlePushMessage:userInfo notification:nil];
+    
+    //除了个推还要处理走苹果的信息放在body里面
+    if (userInfo) {
+        NSString *payloadMsg = [userInfo objectForKey:@"payload"];
+        //        NSString *message=[[[userInfo objectForKey:@"aps"]objectForKey:@"alert"]objectForKey:@"body"];
+        
+        
+        NSDictionary *dict =[[NSDictionary alloc] initWithObjectsAndKeys:payloadMsg,@"payload",nil];
+        //创建通知
+        NSNotification *notification =[NSNotification notificationWithName:@"jiaReceiveRemoteOtherNotification" object:nil userInfo:dict];
+        //通过通知中心发送通知
+        [[NSNotificationCenter defaultCenter] postNotification:notification];
+    }
+    NSLog(@"\n>>>[Receive RemoteNotification]:%@\n\n", userInfo);
+    
+    return XAMessageForward(application:(UIApplication *)application didReceiveRemoteNotification:(NSDictionary *)userInfo);
+}
+
+AspectPatch(-, void,application:(UIApplication *)application didReceiveRemoteNotification:(NSDictionary *)userInfo fetchCompletionHandler:(void (^)(UIBackgroundFetchResult result))completionHandler)
+{
+    
+    //处理applicationIconBadgeNumber-1
+    //[self handlePushMessage:userInfo notification:nil];
+    
+    //除了个推还要处理走苹果的信息放在body里面
+    if (userInfo) {
+        NSString *payloadMsg = [userInfo objectForKey:@"payload"];
+        //        NSString *message=[[[userInfo objectForKey:@"aps"]objectForKey:@"alert"]objectForKey:@"body"];
+        //        UIAlertView *alert=[[UIAlertView alloc]initWithTitle:@"您有一条新消息" message:[NSString stringWithFormat:@"%@,%@",payloadMsg,message] delegate:self cancelButtonTitle:@"取消" otherButtonTitles:@"确定", nil];
+        //        [alert show];
+        //        NSLog(@"%@",userInfo);
+        
+        
+        NSDictionary *dict =[[NSDictionary alloc] initWithObjectsAndKeys:payloadMsg,@"payload",nil];
+        //创建通知
+        NSNotification *notification =[NSNotification notificationWithName:@"jiaReceiveRemoteNotification" object:nil userInfo:dict];
+        //通过通知中心发送通知
+        [[NSNotificationCenter defaultCenter] postNotification:notification];
+    }
+    // 处理APN
+    //NSLog(@"\n>>>[Receive RemoteNotification - Background Fetch]:%@\n\n", userInfo);
+    //completionHandler(UIBackgroundFetchResultNewData);
+    return XAMessageForwardDirectly(application:(UIApplication *)application didReceiveRemoteNotification:(NSDictionary *)userInfo fetchCompletionHandler:(void (^)(UIBackgroundFetchResult result))completionHandler);
+}
+
+AspectPatch(-, void, dealloc)
+{
+    [[NSNotificationCenter defaultCenter] removeObserver:self name:@"jiaGeTuiNotification" object:nil];
+    [[NSNotificationCenter defaultCenter] removeObserver:self name:@"jiaReceiveRemoteNotification" object:nil];
+    [[NSNotificationCenter defaultCenter] removeObserver:self name:@"jiaReceiveRemoteOtherNotification" object:nil];
+    XAMessageForwardDirectly(dealloc);
+}
 
 
 
@@ -73,7 +139,7 @@ AspectPatch(-, void, application:(UIApplication *)application didRegisterUserNot
 -(void)initLoadGeTui:(NSDictionary *)launchOptions
 {
     // 通过 appId、 appKey 、appSecret 启动SDK，注：该方法需要在主线程中调用
-    [GeTuiSdk startSdkWithAppId:self.JiaKGtAppId appKey:self.JiaKGtAppKey appSecret:self.JiaKGtAppSecret delegate:self];
+    [GeTuiSdk startSdkWithAppId:[jiaGTConfigManager sharedInstance].jiaGTAppId appKey:[jiaGTConfigManager sharedInstance].jiaGTAppKey appSecret:[jiaGTConfigManager sharedInstance].jiaGTAppSecret delegate:self];
     
     // 注册APNS
     [self registerUserNotification];
@@ -176,6 +242,48 @@ AspectPatch(-, void, application:(UIApplication *)application didRegisterUserNot
     NSLog(@"\n>>>[GexinSdk SetModeOff]:%@\n\n", isModeOff ? @"开启" : @"关闭");
 }
 
+// 处理推送消息
+- (void)handlePushMessage:(NSDictionary *)dict notification:(UILocalNotification *)localNotification {
+    NSLog(@"开始处理从通知栏点击进来的推送消息");
+    
+    if ([UIApplication sharedApplication].applicationIconBadgeNumber != 0) {
+        if (localNotification) {
+            [[UIApplication sharedApplication] cancelLocalNotification:localNotification];
+        }
+        [UIApplication sharedApplication].applicationIconBadgeNumber -= 1;
+    }
+    else {
+        [[UIApplication sharedApplication] cancelAllLocalNotifications];
+        [UIApplication sharedApplication].applicationIconBadgeNumber = 0;
+    }
+}
+
+
+
+/** SDK收到透传消息回调 */
+- (void)GeTuiSdkDidReceivePayload:(NSString *)payloadId andTaskId:(NSString *)taskId andMessageId:(NSString *)aMsgId andOffLine:(BOOL)offLine fromApplication:(NSString *)appId {
+    
+    [self handlePushMessage:nil notification:nil];
+    // [4]: 收到个推消息
+    NSData *payload = [GeTuiSdk retrivePayloadById:payloadId];
+    NSString *payloadMsg = nil;
+    if (payload) {
+        payloadMsg = [[NSString alloc] initWithBytes:payload.bytes length:payload.length encoding:NSUTF8StringEncoding];
+    }
+    
+    //    NSString *msg = [NSString stringWithFormat:@" payloadId=%@,taskId=%@,messageId:%@,payloadMsg:%@%@", payloadId, taskId, aMsgId, payloadMsg, offLine ? @"<离线消息>" : @""];
+    //
+    //    UIAlertView *alert=[[UIAlertView alloc]initWithTitle:@"您有一条新消息，走个推" message:msg delegate:self cancelButtonTitle:@"取消" otherButtonTitles:@"确定", nil];
+    //    [alert show];
+    
+    // NSLog(@"\n>>>[GexinSdk ReceivePayload]:%@\n\n", msg);
+    
+    NSDictionary *dict =[[NSDictionary alloc] initWithObjectsAndKeys:aMsgId,@"aMsgId", [NSNumber numberWithBool:offLine],@"offLine",appId,@"appId",payloadMsg,@"payload",nil];
+    //创建通知
+    NSNotification *notification =[NSNotification notificationWithName:@"jiaGeTuiNotification" object:nil userInfo:dict];
+    //通过通知中心发送通知
+    [[NSNotificationCenter defaultCenter] postNotification:notification];
+}
 
 @end
 #undef AtAspectOfClass
